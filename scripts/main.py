@@ -1,0 +1,233 @@
+import glob
+import copy
+from pathlib import Path
+import pandas as pd
+from collections import defaultdict
+from openpyxl import load_workbook
+from openpyxl.utils.dataframe import dataframe_to_rows
+
+######## Constants and configs:
+
+SIZE_VARIANTS = ["S", "M", "L", "XL", "XXL", "3XL", "4XL", "5XL"]
+COLOR_VARIANTS = ["Black", "White", "Charcoal", "Navy"]
+COLOR_MAP = {
+    "Black": "Black",
+    "White": "White",
+    "Charcoal": "Grey",
+    "Navy": "Blue",
+}
+
+PARENT_FIELDS = [
+    "feed_product_type",
+    "item_sku",
+    "brand_name",
+    "item_name",
+    "manufacturer",
+    "recommended_browse_nodes",
+    "main_image_url",
+    "parent_child",
+    "variation_theme",
+    "update_delete",
+]
+
+SIZE_MAP = {
+    "S": "Small",
+    "M": "Medium",
+    "L": "Large",
+    "XL": "X-Large",
+    "XXL": "XX-Large",
+    "3XL": "XXX-Large",
+    "4XL": "XXXX-Large",
+    "5XL": "XXXXX-Large",
+}
+STANDARD_PRICE = 11.99
+
+SIZE_PRICE_OFFSET = {
+    "S": 0,
+    "M": 0,
+    "L": 0,
+    "XL": 0,
+    "XXL": 0,
+    "3XL": 1,
+    "4XL": 1,
+    "5XL": 1,
+}
+PRODUCT_NAME_PHRASE = "T Shirts for Men Uk Funny, Mens T Shirt Funny, Unisex Printed Design Tee Ideal Men's T-Shirt Funny Print, Great Birthday Idea for Men!"
+
+#########################
+
+
+def generate_amazon_listing(template_file: Path, imgs_folder: Path) -> pd.DataFrame:
+    """Generate an amazon listing from a template file.
+    Args:
+        template_file (Path): Path to the template file.
+        imgs_folder (Path, optional): Path to the images folder. Defaults to Path('../inputs').
+    Returns:
+        pd.DataFrame: [description]
+    """
+    # Read the template file
+    df = pd.read_excel(template_file, sheet_name="Template", header=None)
+    first_2_rows = df.loc[:2, :]  # Save intro rows to re-add later on
+    df = pd.read_excel(template_file, sheet_name="Template", skiprows=2)
+    original_dtypes = df.dtypes
+
+    # Get required fields
+    fields = (
+        pd.read_excel(template_file, sheet_name="Data Definitions", skiprows=1)
+        .fillna(method="ffill")
+        .drop(0)
+    )
+    field_mapper = (
+        fields[["Field name", "Local label name"]]
+        .set_index("Field name")["Local label name"]
+        .to_dict()
+    )
+
+    # Get the valid values
+    valid_values = (
+        pd.read_excel(
+            template_file,
+            sheet_name="Valid Values",
+            skiprows=1,
+            header=None,
+        )
+        .set_index(1)
+        .drop(0, axis=1)
+    )
+    valid_values = valid_values.apply(lambda x: x.dropna().to_list(), axis=1)
+    valid_values.index = valid_values.index.str.replace(r" - .*", "", regex=True)
+    valid_values = valid_values[valid_values.str.len() > 0]
+    valid_values = valid_values[~valid_values.index.duplicated()]
+
+    # Fill first line with Parent product
+    imgs = [img for img in imgs_folder.iterdir() if img.suffix in [".jpg", ".png"]]
+    product_name = imgs_folder.name
+    parent_product_sku = product_name.replace(" ", "-")
+    main_img_url = to_url(
+        product_name,
+        next(img.name for img in imgs if "lay flat" in img.name.lower()),
+    )
+    size_img_url = to_url(
+        product_name,
+        next(img.name for img in imgs if "size guide" in img.name.lower()),
+    )
+    df.loc[0, "item_sku"] = parent_product_sku
+    df.loc[0, "item_name"] = " ".join([product_name.title(), PRODUCT_NAME_PHRASE])
+    df.loc[0, "main_image_url"] = main_img_url
+    df.loc[0, "parent_child"] = "Parent"
+
+    # Get the images and sort them by color
+
+    imgs_by_color = defaultdict(list)
+    for img in imgs:
+        found_color = False
+        for color in COLOR_VARIANTS:
+            if color.lower() in img.name.lower():
+                imgs_by_color[color].append(img.name)
+                found_color = True
+        if not found_color and "size guide" not in img.name.lower():
+            imgs_by_color["no-color"].append(img.name)
+
+    # Assume the name of the folder is the product name
+
+    new_rows = []
+    for size in SIZE_VARIANTS:
+        for color, imgs in imgs_by_color.copy().items():
+            copy_imgs = copy.deepcopy(imgs)
+            if color == "no-color":
+                continue
+            try:
+                main_img = next(img for img in copy_imgs if "flat" in img.lower())
+            except StopIteration:
+                main_img = copy_imgs[0]
+            main_img_url = to_url(
+                product_name,
+                main_img,
+            )
+            copy_imgs.remove(main_img)
+            fields_to_fill = {
+                "item_sku": "-".join([product_name.replace(" ", "-"), color, size]),
+                "item_name": " ".join([product_name.title(), PRODUCT_NAME_PHRASE]),
+                "color_map": COLOR_MAP[color],
+                "color_name": color,
+                "size_name": size,
+                "size_map": SIZE_MAP[size],
+                "shirt_size": size,
+                "main_image_url": main_img_url,
+                # "product_description": "DESC", This will be AI autogenerated later on
+                "parent_child": "Child",
+                "parent_sku": parent_product_sku,
+                "standard_price": STANDARD_PRICE + SIZE_PRICE_OFFSET[size],
+            }
+            i = 0
+            for i, img in enumerate(copy_imgs):  # Load color images
+                fields_to_fill[f"other_image_url{i+1}"] = to_url(product_name, img)
+            ii = 0
+            for ii, img in enumerate(imgs_by_color["no-color"]):  # Load no-color images
+                if i + ii + 1 >= 8:
+                    break
+                fields_to_fill[f"other_image_url{i + ii + 2}"] = to_url(
+                    product_name, img
+                )
+            size_i = min([i + ii + 3, 8])
+            fields_to_fill[
+                f"other_image_url{size_i}"
+            ] = size_img_url  # Add sizes reference last
+            first_row = df.loc[0, :].copy()
+            first_row[first_row.index.str.startswith("other_image_url")] = ""
+            first_row.update(fields_to_fill)
+            new_rows.append(first_row)
+    new_rows_df = pd.DataFrame(new_rows)
+    df = pd.concat([df, new_rows_df], ignore_index=True)
+    output_file = f"../outputs/{product_name}.tsv"
+    first_2_rows.to_csv(output_file, sep="\t", index=False, header=False)
+    # clean parent row
+    df.loc[0, ~df.columns.isin(PARENT_FIELDS)] = pd.NA
+    validate_data(df, valid_values, field_mapper)
+    original_dtypes[original_dtypes == "int64"] = "Int64"
+    df = df.astype(original_dtypes[original_dtypes == "Int64"])
+    df.astype("object").fillna("", inplace=True)
+    df.to_csv(output_file, sep="\t", index=False, header=False, mode="a")
+    # read the output template file
+    template_wb = load_workbook("../templates/template.xlsm")
+    template_ws = template_wb["Template"]
+    # write the data to the template
+    print(df)
+    for row in dataframe_to_rows(df, index=False, header=False):
+        row = ["" if cell is pd.NA else cell for cell in row]
+        print(row)
+        template_ws.append(row)
+    # save the template
+    template_wb.save(f"../outputs/{product_name}.xls")
+    return df
+
+
+def validate_data(df, valid_values, field_mapper):
+    """Validate the data in the dataframe against the fields"""
+    for column in df.columns:
+        if column not in field_mapper:
+            continue
+        if field_mapper[column] not in valid_values:
+            continue
+        if not df[column].isin(valid_values[field_mapper[column]] + [pd.NA]).all():
+            if df[column].isna().all():
+                continue
+            raise ValueError(
+                f"Invalid values in column {field_mapper[column]}, values: {df[column].unique()}"
+            )
+    print("Data validated successfully!")
+
+
+def to_url(product_name: str, img_name: str) -> str:
+    # BASE_URL = "https://d.img.vision/merchpanda/"
+    BASE_URL = "https://storage.googleapis.com/shirtshack-images/batch V4 Complete"
+    return f"{BASE_URL}/{product_name}/{img_name}"
+
+
+if __name__ == "__main__":
+    for folder in glob.glob("../inputs/batch V4 Complete/*/"):
+        print(f"Processing {folder}")
+        generate_amazon_listing(
+            "../templates/T-Shirts(mens-Fashion-tshirts).xlsm",
+            Path(folder),
+        )
