@@ -129,7 +129,7 @@ def block_trademarked(func):
 def _call_claude(system: str, user: str, max_tokens: int = 1024) -> str:
     """Helper to call Claude and return the text response."""
     response = client.messages.create(
-        model="claude-sonnet-4-5-20251001",
+        model="claude-haiku-4-5-20251001",
         max_tokens=max_tokens,
         system=system,
         messages=[{"role": "user", "content": user}],
@@ -151,7 +151,7 @@ def _call_claude_vision(image_url: str, prompt: str) -> str:
         media_type = "image/jpeg"
 
     response = client.messages.create(
-        model="claude-sonnet-4-5-20251001",
+        model="claude-haiku-4-5-20251001",
         max_tokens=256,
         messages=[
             {
