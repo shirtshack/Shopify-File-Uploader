@@ -1,6 +1,5 @@
 import random
 import time
-import openai
 from loguru import logger
 
 
@@ -11,7 +10,7 @@ def retry_with_exponential_backoff(
     exponential_base: float = 2,
     jitter: bool = True,
     max_retries: int = 10,
-    errors: tuple = (openai.RateLimitError,),
+    errors: tuple = (Exception,),
 ):
     """Retry a function with exponential backoff."""
 
