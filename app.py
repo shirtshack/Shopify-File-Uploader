@@ -1,4 +1,18 @@
 import os
+import json
+import tempfile
+
+# Handle Google credentials from Streamlit secrets
+if "GOOGLE_APPLICATION_CREDENTIALS_JSON" in st.secrets:
+    creds = st.secrets["GOOGLE_APPLICATION_CREDENTIALS_JSON"]
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(json.loads(creds), f)
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = f.name
+```
+
+Then go back to Streamlit secrets and add this new key:
+```
+GOOGLE_APPLICATION_CREDENTIALS_JSON = '{"type": "service_account", ...}'
 import datetime
 import pandas as pd
 import numpy as np
