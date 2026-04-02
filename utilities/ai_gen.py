@@ -1,15 +1,16 @@
 import os
 import re
+import base64
+import httpx
 from functools import wraps
 
-import replicate
-from openai import OpenAI
+import anthropic
 from loguru import logger
 
 from .gdrive import RestrictedWords
 
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 
 DESCRIPTION_EXAMPLES = {
@@ -37,11 +38,11 @@ DESCRIPTION_EXAMPLES = {
 <p>-Fun twist on a classic t-shirt</p>
 <p>-Perfect for costume parties</p>""",
     "I'M RETIRED NOT EXPIRED": """<p>Step into Retirement in Style and Humor</p>
-<p>Celebrate the joy of a well-earned retirement with Shirtshack’s IM RETIRED NOT EXPIRED t-shirt. A good blend of fun, fashion, comfort and a generous dollop of tongue-in-cheek wit. Flaunt your free status with pride with this high-quality retirement tee that defines your new phase of life in a light-hearted way. There's nothing quite like a good laugh to celebrate years of relentless hard work.</p>
+<p>Celebrate the joy of a well-earned retirement with Shirtshack's IM RETIRED NOT EXPIRED t-shirt. A good blend of fun, fashion, comfort and a generous dollop of tongue-in-cheek wit. Flaunt your free status with pride with this high-quality retirement tee that defines your new phase of life in a light-hearted way. There's nothing quite like a good laugh to celebrate years of relentless hard work.</p>
 <p>Quality Meets Comfort</p>
 <p>Shirtshack believes that your retirement should be all about comfort. This soft, durable, and high-quality cotton t-shirt makes a bold statement without compromising on comfort. Its superior fit is designed to suit all body types and its prerequisite is to deliver maximum ease. Impeccable stitching and premium materials ensure you'll be lounging in style and luxury for years to come. </p>
 <p>Gift a Gag That Lasts</p>
-<p>Looking for that great retirement gift? Look no further! The IM RETIRED NOT EXPIRED shirt is not just another gift; it's a gesture, a sentiment, and a smile rolled into one. It's a good way to kick-start the golden years of a retiree’s life, signaling the end of alarms and the beginning of a life ruled by their own time. Let them celebrate their freedom every time they wear it.</p>
+<p>Looking for that great retirement gift? Look no further! The IM RETIRED NOT EXPIRED shirt is not just another gift; it's a gesture, a sentiment, and a smile rolled into one. It's a good way to kick-start the golden years of a retiree's life, signaling the end of alarms and the beginning of a life ruled by their own time. Let them celebrate their freedom every time they wear it.</p>
 <p>-Makes a great retirement gift</p>
 <p>-Sentimental and meaningful</p>
 <p>-Reminds retiree of their accomplishments</p>
@@ -125,6 +126,53 @@ def block_trademarked(func):
     return wrapper
 
 
+def _call_claude(system: str, user: str, max_tokens: int = 1024) -> str:
+    """Helper to call Claude and return the text response."""
+    response = client.messages.create(
+        model="claude-sonnet-4-5-20251001",
+        max_tokens=max_tokens,
+        system=system,
+        messages=[{"role": "user", "content": user}],
+    )
+    return response.content[0].text
+
+
+def _call_claude_vision(image_url: str, prompt: str) -> str:
+    """Helper to call Claude with an image URL and return the text response."""
+    image_data = base64.standard_b64encode(httpx.get(image_url).content).decode("utf-8")
+    # Detect media type from URL
+    if image_url.lower().endswith(".png"):
+        media_type = "image/png"
+    elif image_url.lower().endswith(".webp"):
+        media_type = "image/webp"
+    elif image_url.lower().endswith(".gif"):
+        media_type = "image/gif"
+    else:
+        media_type = "image/jpeg"
+
+    response = client.messages.create(
+        model="claude-sonnet-4-5-20251001",
+        max_tokens=256,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": image_data,
+                        },
+                    },
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ],
+    )
+    return response.content[0].text
+
+
 class AiProductGenerator:
     """Class to generate copy for Amazon products."""
 
@@ -133,50 +181,34 @@ class AiProductGenerator:
         self.image_description = description
         self.clothing_type = clothing_type
 
-    # No block_trademarked decorator here???
-    #def generate_title(self):
     @block_trademarked
     def generate_title(self, trademark_stopwords=None):
         """Generate a title for the product."""
-
-        #############
+        stop_phrase = ""
         if trademark_stopwords:
             stop_phrase = (
                 " Refrain from using the following trademarked words or similar terms: "
                 + ", ".join(trademark_stopwords)
                 + ". "
             )
-        else:
-            stop_phrase = ""
 
-        system_content = ("You are a system that is trained to generate a ~20"
-                          + " word product title for Amazon products. You are"
-                          + " asked to generate a product title for the given"
-                          + " product description. Add funny and appropriate bits"
-                          + " to make the title more interesting."
-                          + stop_phrase)
-        #############
+        system = (
+            "You are a system that generates a ~20 word product title for Amazon products. "
+            "Generate a product title for the given product description. "
+            "Add funny and appropriate bits to make the title more interesting. "
+            "Reply with only the title, no preamble."
+            + stop_phrase
+        )
 
         few_shot = f"""Product Description: A funny {self.clothing_type} called "AMONG US TRUST NO ONE" it shows many colorful aliens
-        Product Title: Among us trust no one, funny {self.clothing_type}, 100% Cotton, Funny {self.clothing_type}, Unisex Printed Design Ideal birthday gift for true players. Who is the impostor?
-        Product Description: A funny {self.clothing_type} called "BEER THERAPY" it shows a man holding a beer
-        Product Title: Beer Therapy {self.clothing_type} for Men - Funny and Refreshing! 100% cotton, Funny {self.clothing_type}, Unisex Printed Design. The perfect therapy session after a long day. 
-        Product Description: A funny {self.clothing_type} called "ALL MIGHT SMASH" it shows hero academia
-        Product Title:All Might Smash {self.clothing_type} - Funny and Powerful! Funny {self.clothing_type}, Unisex Printed Design. Show the world your heroic spirit! Plus Ultra!
-        Product Description: A funny {self.clothing_type} called "{self.product_name}" it shows {self.image_description}
-        Product Title:"""
+Product Title: Among us trust no one, funny {self.clothing_type}, 100% Cotton, Funny {self.clothing_type}, Unisex Printed Design Ideal birthday gift for true players. Who is the impostor?
+Product Description: A funny {self.clothing_type} called "BEER THERAPY" it shows a man holding a beer
+Product Title: Beer Therapy {self.clothing_type} for Men - Funny and Refreshing! 100% cotton, Funny {self.clothing_type}, Unisex Printed Design. The perfect therapy session after a long day.
+Product Description: A funny {self.clothing_type} called "{self.product_name}" it shows {self.image_description}
+Product Title:"""
 
-        response = client.chat.completions.create(model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "system",
-                "content": system_content, ########
-            },
-            {"role": "user", "content": few_shot},
-        ],
-        temperature=0.9,
-        max_tokens=40)
-        title = response.choices[0].message.content
+        title = _call_claude(system, few_shot, max_tokens=60)
+        title = title.strip()
         logger.info(f"Created AI title: {title}")
 
         if len(title) > 180:
@@ -187,18 +219,18 @@ class AiProductGenerator:
     @block_trademarked
     def generate_description(self, trademark_stopwords=None):
         """Generate a description for the product."""
-
+        stop_phrase = ""
         if trademark_stopwords:
             stop_phrase = (
                 "Refrain from using the following trademarked words or similar terms: "
                 + ", ".join(trademark_stopwords)
                 + ". "
             )
-        else:
-            stop_phrase = ""
 
         few_shot = (
-            "Generate a description for the product, pay attention to the product type, you're only given examples for t-shirts but product type may be hoodie or sweatshirt, here are some example descriptions for t-shirts:\n\n"
+            "Generate a description for the product, pay attention to the product type, "
+            "you're only given examples for t-shirts but product type may be hoodie or sweatshirt, "
+            "here are some example descriptions for t-shirts:\n\n"
             + "\n".join(
                 [
                     f"Product Name: {k}\nDescription:{v}"
@@ -210,65 +242,50 @@ class AiProductGenerator:
             + "\nDescription:"
         )
 
-        response = client.chat.completions.create(model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "system",
-                #"content": "You are a system that is trained to generate a few paragraphs describing a product for an Amazon posting. You are asked to generate a product description based on the product name. Create something similar to the examples. Do not use any copyrighted brands like Disney, Marvel or Ghibli. Don't say the product is official or licensed.",
-                "content": "You are a system that is trained to generate a few paragraphs describing a product for an Amazon posting. You are asked to generate a product description based on the product name. Create something similar to the examples.",
-            },
-            {"role": "user", "content": few_shot},
-        ],
-        temperature=0.9,
-        max_tokens=512)
-        desc = response.choices[0].message.content
-        logger.info("Using prompt: " + few_shot)
-        logger.info(f"Created AI desc: {desc}")
-        desc = desc.replace("\n\n", "\n") # Fix gpt-4o-mini adding blank lines
-        return desc
-        #return response
+        system = (
+            "You are a system that generates a few paragraphs describing a product for an Amazon posting. "
+            "Generate a product description based on the product name. "
+            "Create something similar to the examples. "
+            "Do not use any copyrighted brands like Disney, Marvel or Ghibli. "
+            "Don't say the product is official or licensed."
+        )
 
-    #def generate_keyphrases(self):
+        desc = _call_claude(system, few_shot, max_tokens=512)
+        desc = desc.replace("\n\n", "\n")
+        logger.info(f"Created AI desc: {desc}")
+        return desc
+
     @block_trademarked
     def generate_keyphrases(self, trademark_stopwords=None):
-
-        #############
+        """Generate keyphrases for the product."""
+        stop_phrase = ""
         if trademark_stopwords:
             stop_phrase = (
                 " Refrain from using the following trademarked words or similar terms: "
                 + ", ".join(trademark_stopwords)
                 + ". "
             )
-        else:
-            stop_phrase = ""
 
-        system_content = ("You are a keyphrase generation system that is trained"
-                          + " to produce EXACTLY 5 keyphrases for Amazon products."
-                          + " Keywords should be relevant to the product and "
-                          + " should be popular. The list of keyphrases should be"
-                          + " comma separated."
-                          + stop_phrase)
-        #############
+        system = (
+            "You are a keyphrase generation system that produces EXACTLY 5 keyphrases for Amazon products. "
+            "Keywords should be relevant to the product and popular. "
+            "The list of keyphrases should be comma separated. "
+            "Reply with only the comma-separated keyphrases, no preamble."
+            + stop_phrase
+        )
 
-        # Generate keyphrases
-        if self.image_description != "":
+        if self.image_description:
             desc_text = f" that shows {self.image_description}"
         else:
             desc_text = ""
-        zero_shot = f"""Please generate a list of 5 keyphrases for the following product: A funny {self.clothing_type} model named "{self.product_name}"{desc_text}."""
 
-        response = client.chat.completions.create(model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "system",
-                #"content": "You are a keyphrase generation system that is trained to produce EXACTLY 5 keyphrases for Amazon products. Keywords should be relevant to the product and should be popular. The list of keyphrases should be comma separated. Don't use copyrighted brands like Disney, Marvel or Ghibli.",
-                "content": system_content, ########
-            },
-            {"role": "user", "content": zero_shot},
-        ],
-        temperature=0.9,
-        max_tokens=56)
-        keyphrases = response.choices[0].message.content.split(", ")
+        zero_shot = (
+            f'Please generate a list of 5 keyphrases for the following product: '
+            f'A funny {self.clothing_type} model named "{self.product_name}"{desc_text}.'
+        )
+
+        keyphrases_text = _call_claude(system, zero_shot, max_tokens=80)
+        keyphrases = [k.strip() for k in keyphrases_text.split(",")]
         if len(keyphrases) != 5:
             logger.info("Keyphrase generation failed, retrying...")
             return self.generate_keyphrases()
@@ -277,66 +294,53 @@ class AiProductGenerator:
 
     @staticmethod
     def inspect_tshirt(flat_shirt_url):
-        tshirtdesc = replicate.run(
-            "andreasjansson/blip-2:4b32258c42e9efd4288bb9910bc532a69727f9acd26aa08e175713a0a857a608",
-            input={
-                "image": flat_shirt_url,
-                "question": f"What is depicted on the clothing item?",
-            },
+        """Use Claude vision to describe what's on the t-shirt."""
+        desc = _call_claude_vision(
+            flat_shirt_url,
+            "What is depicted on this clothing item? Describe the design/graphic on it concisely in one sentence."
         )
-        logger.info("T-shrit description: " + tshirtdesc)
-        return tshirtdesc
+        logger.info("T-shirt description: " + desc)
+        return desc
 
-    #def generate_bullets(self):
     @block_trademarked
     def generate_bullets(self, trademark_stopwords=None):
         """Generate bullet points for the product."""
-
+        stop_phrase = ""
         if trademark_stopwords:
             stop_phrase = (
                 "Refrain from using the following trademarked words or similar terms: "
                 + ", ".join(trademark_stopwords)
                 + ". "
             )
-        else:
-            stop_phrase = ""
 
         few_shot = (
-            f"Generate 5 bullet points for this funny {self.clothing_type}, do not say the product is licensed or official, here are some examples for t-shirts:\n\n"
+            f"Generate 5 bullet points for this funny {self.clothing_type}, "
+            "do not say the product is licensed or official, here are some examples for t-shirts:\n\n"
             + "\n".join(
                 [
                     f"Product Name: {k}\nBullet points:\n{v}"
                     for k, v in BULLET_EXAMPLES.items()
                 ]
             )
-            #+ "\n\nProduct Name: "
-            + "\n\n{stop_phrase}\n\nProduct Name: "
+            + f"\n\n{stop_phrase}\n\nProduct Name: "
             + f"{self.product_name} - {self.image_description}"
             + "\nYour created bullet points:"
         )
 
-        response = client.chat.completions.create(model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "system",
-                #"content": "You are a bullet point generation system that is trained to produce EXACTLY 5 bullet points for Amazon products. Bullet points should be relevant to the product and should be attractive to a reader. Create something similar to the examples given. You're not allowed to use any copyrighted brands like Disney, Marvel or Ghibli.",
-                "content": "You are a bullet point generation system that is trained to produce EXACTLY 5 bullet points for Amazon products. Bullet points should be relevant to the product and should be attractive to a reader. Create something similar to the examples given.",
-            },
-            {"role": "user", "content": few_shot},
-        ],
-        temperature=0.9,
-        max_tokens=512)
-        raw_bullets = response.choices[0].message.content
+        system = (
+            "You are a bullet point generation system that produces EXACTLY 5 bullet points for Amazon products. "
+            "Bullet points should be relevant to the product and attractive to a reader. "
+            "Create something similar to the examples given."
+        )
+
+        raw_bullets = _call_claude(system, few_shot, max_tokens=512)
         bullets = [
-            #re.sub("Bullet \d:\s", "", bullet)
-            re.sub(r"Bullet \d:\s", "", bullet) # Fix SyntaxWarning: invalid escape sequence '\d' (Python > 3.12.4)
+            re.sub(r"Bullet \d:\s", "", bullet)
             for bullet in re.split("\n+", raw_bullets)
         ]
+        bullets = [b for b in bullets if b.strip()]
         if len(bullets) != 5:
-            logger.info(raw_bullets)
-            logger.info(
-                f"Bullet generation failed, generated {len(bullets)} instead of 5, retrying..."
-            )
+            logger.info(f"Bullet generation failed, generated {len(bullets)} instead of 5, retrying...")
             return self.generate_bullets()
         logger.info(f"Created AI bullets: {bullets}")
         return bullets
@@ -361,7 +365,7 @@ DESIGN_BULLET_EXAMPLES = {
     (
         "Three Possum Moon",
         "three opossums singing at the moon",
-    ): "Bullet 1: In the cursed Three Opossum Moon region, possums don't just howl, they channel magical energy from the moon. Ever heard of the 3 Possum Moon meme? It's more than a joke – it's a nod to the mystical magic of the Possum race. \nBullet 2: The Three Possum Moon isn't just a fashion statement. Rumor has it, it's magic. Those who wear it speak of mysterious possum encounters as it's said to tap into the Possom Kingdome's mystical power. Wear if you dare!",
+    ): "Bullet 1: In the cursed Three Opossum Moon region, possums don't just howl, they channel magical energy from the moon. Ever heard of the 3 Possum Moon meme? It's more than a joke - it's a nod to the mystical magic of the Possum race. \nBullet 2: The Three Possum Moon isn't just a fashion statement. Rumor has it, it's magic. Those who wear it speak of mysterious possum encounters as it's said to tap into the Possom Kingdome's mystical power. Wear if you dare!",
 }
 
 
@@ -374,11 +378,10 @@ class AiDesignGenerator:
 
     @staticmethod
     def inspect_design(design_url):
-        desc = replicate.run(
-            "andreasjansson/blip-2:4b32258c42e9efd4288bb9910bc532a69727f9acd26aa08e175713a0a857a608",
-            input={
-                "image": design_url,
-            },
+        """Use Claude vision to describe the design."""
+        desc = _call_claude_vision(
+            design_url,
+            "Describe this design/graphic concisely in one sentence."
         )
         logger.info("Design description: " + desc)
         return desc
@@ -386,37 +389,33 @@ class AiDesignGenerator:
     @block_trademarked
     def generate_title(self, trademark_stopwords: list = None):
         """Generate a title for the design."""
-
+        stop_phrase = ""
         if trademark_stopwords:
             stop_phrase = (
                 "VERY IMPORTANT! Refrain from using the following trademarked words or similar terms: "
                 + ", ".join(trademark_stopwords)
                 + ". "
             )
-        else:
-            stop_phrase = ""
 
         few_shot = f"""Design Description: A funny design called "AMONG US TRUST NO ONE" it shows many colorful aliens
         Design Title: Among us trust no one design - Ideal birthday gift for true players. Who is the impostor?
         Design Description: A funny design called "BEER THERAPY" it shows a man holding a beer
-        Design Title: Beer Therapy design - The perfect therapy session after a long day. 
+        Design Title: Beer Therapy design - The perfect therapy session after a long day.
         Design Description: A funny design called "ALL MIGHT SMASH" it shows hero academia
         Design Title: All Might Smash design - Show the world your heroic spirit! Plus Ultra!
         ------ END OF EXAMPLES ----\n{stop_phrase}\n
         Design Description: A funny design called "{self.product_name}" it shows {self.image_description}
         Design Title:"""
 
-        response = client.chat.completions.create(model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "system",
-                "content": f"You are a system that is trained to generate an ~8 word product title for Amazon merch items. You are asked to generate a title for the given design description. Add funny and appropriate bits to make the title more interesting.{stop_phrase}",
-            },
-            {"role": "user", "content": few_shot},
-        ],
-        temperature=0.9,
-        max_tokens=40)
-        title = response.choices[0].message.content
+        system = (
+            f"You are a system that generates an ~8 word product title for Amazon merch items. "
+            f"Generate a title for the given design description. "
+            f"Add funny and appropriate bits to make the title more interesting. "
+            f"Reply with only the title, no preamble.{stop_phrase}"
+        )
+
+        title = _call_claude(system, few_shot, max_tokens=60)
+        title = title.strip()
         logger.info(f"Created AI title: {title}")
 
         if len(title) > 180:
@@ -427,17 +426,16 @@ class AiDesignGenerator:
     @block_trademarked
     def generate_description(self, trademark_stopwords: list = None):
         """Generate a description for the design."""
+        stop_phrase = ""
         if trademark_stopwords:
             stop_phrase = (
                 "VERY IMPORTANT! NEVER use the following trademarked words in the description: "
                 + ", ".join(trademark_stopwords)
                 + ". "
             )
-        else:
-            stop_phrase = ""
 
         few_shot = (
-            f"Generate a description for the design based on the following examples:\n\n"
+            "Generate a description for the design based on the following examples:\n\n"
             + "\n\n".join(
                 [
                     f"Design Name: {k[0]}\nDesign shows: {k[1]}\nDescription: {v}"
@@ -450,35 +448,32 @@ class AiDesignGenerator:
             + "\nDescription:"
         )
 
-        response = client.chat.completions.create(model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "system",
-                "content": "You are a system that is trained to generate a few paragraphs describing a Design for an Amazon Merch posting. You are asked to generate a Design description based on the design name and a short description. Create something similar to the examples. Do not use any copyrighted brands like Disney, Marvel or Ghibli. Don't say the product is official or licensed.",
-            },
-            {"role": "user", "content": few_shot},
-        ],
-        temperature=0.9,
-        max_tokens=512)
-        desc = response.choices[0].message.content
-        logger.info("Using prompt: " + few_shot)
+        system = (
+            "You are a system that generates a few paragraphs describing a Design for an Amazon Merch posting. "
+            "Generate a Design description based on the design name and a short description. "
+            "Create something similar to the examples. "
+            "Do not use any copyrighted brands like Disney, Marvel or Ghibli. "
+            "Don't say the product is official or licensed."
+        )
+
+        desc = _call_claude(system, few_shot, max_tokens=512)
         logger.info(f"Created AI desc: {desc}")
         return desc
 
     @block_trademarked
     def generate_bullets(self, trademark_stopwords: list = None):
-        """Generate a bullet points for the product."""
+        """Generate bullet points for the design."""
+        stop_phrase = ""
         if trademark_stopwords:
             stop_phrase = (
                 "VERY IMPORTANT! NEVER use the following trademarked phrases in the bulletpoints: "
                 + ", ".join(trademark_stopwords)
                 + ". "
             )
-        else:
-            stop_phrase = ""
 
         few_shot = (
-            f"Generate 2 bullet points for this funny design, do not say the product is licensed or official, here are some examples:\n\n"
+            "Generate 2 bullet points for this funny design, do not say the product is licensed or official, "
+            "here are some examples:\n\n"
             + "\n".join(
                 [
                     f"Design Name: {k[0]}\nDesign Description: {k[1]}\nBullet points:\n{v}"
@@ -490,28 +485,22 @@ class AiDesignGenerator:
             + f"{self.product_name}\nDesign Description: {self.image_description}"
             + "\nYour created bullet points:"
         )
-        logger.info(f"using prompt {few_shot}")
-        response = client.chat.completions.create(model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "system",
-                "content": "You are a bullet point generation system that is trained to produce EXACTLY 2 bullet points for Amazon designs. Bullet points should be relevant to the design and should be attractive to a reader. Create something similar to the examples given. You're not allowed to use any copyrighted brands like Disney, Marvel or Ghibli.",
-            },
-            {"role": "user", "content": few_shot},
-        ],
-        temperature=0.9,
-        max_tokens=512)
-        raw_bullets = response.choices[0].message.content
+
+        system = (
+            "You are a bullet point generation system that produces EXACTLY 2 bullet points for Amazon designs. "
+            "Bullet points should be relevant to the design and attractive to a reader. "
+            "Create something similar to the examples given. "
+            "You're not allowed to use any copyrighted brands like Disney, Marvel or Ghibli."
+        )
+
+        raw_bullets = _call_claude(system, few_shot, max_tokens=512)
         bullets = [
-            #re.sub("Bullet \d:\s", "", bullet)
-            re.sub(r"Bullet \d:\s", "", bullet) # Fix SyntaxWarning: invalid escape sequence '\d' (Python > 3.12.4)
+            re.sub(r"Bullet \d:\s", "", bullet)
             for bullet in re.split("\n+", raw_bullets)
         ]
+        bullets = [b for b in bullets if b.strip()]
         if len(bullets) != 2 or any(len(b) > 255 for b in bullets):
-            logger.info(raw_bullets)
-            logger.info(
-                f"Bullet generation failed, generated {len(bullets)} of length {[len(b) for b in bullets]} instead of 2, retrying..."
-            )
+            logger.info(f"Bullet generation failed, generated {len(bullets)}, retrying...")
             return self.generate_bullets()
         logger.info(f"Created AI bullets: {bullets}")
         return bullets
