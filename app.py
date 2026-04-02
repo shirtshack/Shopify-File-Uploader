@@ -1,6 +1,19 @@
 import os
 import json
 import tempfile
+
+# Handle Google credentials from Streamlit secrets
+# MUST happen before any google/utilities imports
+try:
+    import streamlit as st
+    if "GOOGLE_APPLICATION_CREDENTIALS_JSON" in st.secrets:
+        creds = st.secrets["GOOGLE_APPLICATION_CREDENTIALS_JSON"]
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(json.loads(creds), f)
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = f.name
+except Exception:
+    pass
+
 import datetime
 import pandas as pd
 import numpy as np
@@ -20,13 +33,6 @@ from utilities.gcs import gcs_list_prefixes
 from loguru import logger
 from google.cloud import storage
 from utilities.constants import *
-
-# Handle Google credentials from Streamlit secrets
-if "GOOGLE_APPLICATION_CREDENTIALS_JSON" in st.secrets:
-    creds = st.secrets["GOOGLE_APPLICATION_CREDENTIALS_JSON"]
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        json.dump(json.loads(creds), f)
-        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = f.name
 
 
 #### Streamlit app password protection
@@ -180,16 +186,6 @@ selected_bucket = brand_bucket_names[brand]
 bucket = client.get_bucket(selected_bucket)
 
 ##### GENERATION FUNCTIONS
-
-# az = AmazonGenerator(
-#     brand=brand,
-#     client=client,
-#     bucket=selected_bucket,
-#     template_id=template_id,
-#     clothes_type=clothes_type,
-#     kids=is_for_kids,
-#     dont_use_caching=dont_use_caching,
-# )
 
 def gen_title(product_name, tshirt_desc):
     st.session_state["default_title"] = (
