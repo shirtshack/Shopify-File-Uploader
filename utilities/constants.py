@@ -108,6 +108,6 @@ PRODUCT_NAME_PHRASE = {
 }
 GOOGLE_STORAGE_URL = "https://storage.googleapis.com"
 
-MAX_NAME_SKU_LENGTH = 20
+MAX_NAME_SKU_LENGTH = 40
 
 CSV_CACHE_BUCKET = "amazon-uploader-cache"
